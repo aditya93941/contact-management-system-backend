@@ -9,31 +9,45 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const db = new sqlite3.Database('./contacts.db', (err) => {
+const DATABASE_FILE = './contacts.db';
+
+// Initialize SQLite Database
+const db = new sqlite3.Database(DATABASE_FILE, (err) => {
   if (err) {
     console.error('Error opening database:', err.message);
   } else {
     console.log('Connected to SQLite database.');
+    initializeDatabase();
   }
 });
 
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,  
-    email TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL
-  )`);
+// Function to Create Tables
+function initializeDatabase() {
+  db.serialize(() => {
+    db.run(
+      `CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,  
+        email TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL
+      )`
+    );
 
-  db.run(`CREATE TABLE IF NOT EXISTS contacts (
-    id TEXT PRIMARY KEY,  
-    user_id TEXT NOT NULL, 
-    name TEXT NOT NULL,
-    email TEXT NOT NULL,
-    phone TEXT NOT NULL,
-    address TEXT
-  )`);
-});
+    db.run(
+      `CREATE TABLE IF NOT EXISTS contacts (
+        id TEXT PRIMARY KEY,  
+        user_id TEXT NOT NULL, 
+        name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        address TEXT
+      )`
+    );
 
+    console.log('Database tables created (if not existing).');
+  });
+}
+
+// Register a New User
 app.post('/api/register', async (req, res) => {
   const { email, password } = req.body;
 
@@ -42,31 +56,41 @@ app.post('/api/register', async (req, res) => {
   }
 
   db.get(`SELECT * FROM users WHERE email = ?`, [email], async (err, existingUser) => {
+    if (err) return res.status(500).json({ message: 'Database error.' });
+
     if (existingUser) return res.status(400).json({ message: 'User already exists.' });
 
     const userId = uuidv4();
     try {
       const hashedPassword = await bcrypt.hash(password, 10);
 
-      db.run(`INSERT INTO users (id, email, password) VALUES (?, ?, ?)`, 
-        [userId, email, hashedPassword], function(err) {
+      db.run(
+        `INSERT INTO users (id, email, password) VALUES (?, ?, ?)`,
+        [userId, email, hashedPassword],
+        function (err) {
           if (err) return res.status(500).json({ message: 'Error registering user.' });
           res.json({ message: 'User registered successfully.' });
-        });
+        }
+      );
     } catch (err) {
       return res.status(500).json({ message: 'Error hashing password.' });
     }
   });
 });
 
+// Login Endpoint
 app.post('/api/login', (req, res) => {
   const { email, password } = req.body;
 
   db.get(`SELECT * FROM users WHERE email = ?`, [email], (err, user) => {
-    if (err || !user) return res.status(401).json({ message: 'Invalid credentials.' });
+    if (err) return res.status(500).json({ message: 'Database error.' });
+
+    if (!user) return res.status(401).json({ message: 'Invalid credentials.' });
 
     bcrypt.compare(password, user.password, (err, result) => {
-      if (err || !result) return res.status(401).json({ message: 'Invalid credentials.' });
+      if (err) return res.status(500).json({ message: 'Error verifying password.' });
+
+      if (!result) return res.status(401).json({ message: 'Invalid credentials.' });
 
       const token = jwt.sign({ id: user.id }, 'adithya', { expiresIn: '1h' });
       res.json({ token });
@@ -74,6 +98,7 @@ app.post('/api/login', (req, res) => {
   });
 });
 
+// Middleware to Authenticate JWT
 const authenticateJWT = (req, res, next) => {
   const token = req.headers['authorization']?.split(' ')[1];
 
@@ -87,6 +112,7 @@ const authenticateJWT = (req, res, next) => {
   });
 };
 
+// Get Contacts for Authenticated User
 app.get('/api/contacts', authenticateJWT, (req, res) => {
   db.all(`SELECT * FROM contacts WHERE user_id = ?`, [req.user.id], (err, rows) => {
     if (err) return res.status(500).json({ message: 'Failed to fetch contacts.' });
@@ -94,6 +120,7 @@ app.get('/api/contacts', authenticateJWT, (req, res) => {
   });
 });
 
+// Add a New Contact
 app.post('/api/contacts', authenticateJWT, (req, res) => {
   const { name, email, phone, address } = req.body;
 
@@ -102,14 +129,17 @@ app.post('/api/contacts', authenticateJWT, (req, res) => {
   }
 
   const contactId = uuidv4();
-  db.run(`INSERT INTO contacts (id, user_id, name, email, phone, address) VALUES (?, ?, ?, ?, ?, ?)`, 
-    [contactId, req.user.id, name, email, phone, address || ''], 
-    function(err) {
+  db.run(
+    `INSERT INTO contacts (id, user_id, name, email, phone, address) VALUES (?, ?, ?, ?, ?, ?)`,
+    [contactId, req.user.id, name, email, phone, address || ''],
+    function (err) {
       if (err) return res.status(400).json({ message: 'Error adding contact.' });
       res.json({ message: 'Contact added successfully.', id: contactId });
-    });
+    }
+  );
 });
 
+// Get a Specific Contact by ID
 app.get('/api/contacts/:id', authenticateJWT, (req, res) => {
   db.get(`SELECT * FROM contacts WHERE id = ? AND user_id = ?`, [req.params.id, req.user.id], (err, row) => {
     if (err || !row) return res.status(404).json({ message: 'Contact not found.' });
@@ -117,26 +147,31 @@ app.get('/api/contacts/:id', authenticateJWT, (req, res) => {
   });
 });
 
+// Update a Contact
 app.put('/api/contacts/:id', authenticateJWT, (req, res) => {
   const { name, email, phone, address } = req.body;
 
-  db.run(`UPDATE contacts SET name=?, email=?, phone=?, address=? WHERE id=? AND user_id=?`, 
+  db.run(
+    `UPDATE contacts SET name=?, email=?, phone=?, address=? WHERE id=? AND user_id=?`,
     [name, email, phone, address, req.params.id, req.user.id],
-    function(err) {
+    function (err) {
       if (err) return res.status(400).json({ message: 'Error updating contact.' });
       res.json({ message: 'Contact updated successfully.' });
-    });
+    }
+  );
 });
 
+// Delete a Contact
 app.delete('/api/contacts/:id', authenticateJWT, (req, res) => {
-  db.run(`DELETE FROM contacts WHERE id=? AND user_id=?`, [req.params.id, req.user.id], function(err) {
+  db.run(`DELETE FROM contacts WHERE id=? AND user_id=?`, [req.params.id, req.user.id], function (err) {
     if (err) return res.status(400).json({ message: 'Error deleting contact.' });
     res.json({ message: 'Contact deleted successfully.' });
   });
 });
 
+// Clear All Contacts for a User
 app.post('/api/clear-contacts', authenticateJWT, (req, res) => {
-  db.run(`DELETE FROM contacts WHERE user_id = ?`, [req.user.id], function(err) {
+  db.run(`DELETE FROM contacts WHERE user_id = ?`, [req.user.id], function (err) {
     if (err) return res.status(500).json({ message: 'Failed to clear contacts.' });
     res.json({ message: 'User contacts cleared successfully.' });
   });
